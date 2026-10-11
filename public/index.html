@@ -256,6 +256,19 @@ fieldset{border:0;margin:0;padding:0;min-width:0}
     </div>
   </section>
 
+  <section class="setup" id="join" hidden>
+    <div class="inner">
+      <h2>친구 초대 코드</h2>
+      <p class="muted" style="margin:0">초대받은 친구만 들어올 수 있어요. 받은 코드와, 지도에 표시될 닉네임을 적어 주세요.</p>
+      <div class="warn" id="joinErr" hidden></div>
+      <form id="joinForm" novalidate>
+        <div class="field"><label for="codeIn">초대 코드</label><input type="text" id="codeIn" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        <div class="field"><label for="nickIn">닉네임 (12자 이내)</label><input type="text" id="nickIn" maxlength="12" autocomplete="off"></div>
+        <div class="form-actions"><button type="submit" class="btn primary">들어가기</button></div>
+      </form>
+    </div>
+  </section>
+
   <div class="toast" id="toast" role="status"></div>
 </div>
 
@@ -304,13 +317,16 @@ function nearestArea(lat,lng){
 function R(a,b,c,d,e){return {temp:a,foam:b,line:c,fresh:d,glass:e};}
 
 /* ---------- state ---------- */
-var KEY='beer-naver-v1',KEYSTORE='beer-naver-clientid';
-function loadState(){
-  try{var raw=localStorage.getItem(KEY);if(raw){var o=JSON.parse(raw);if(o&&o.v===1&&Array.isArray(o.shops)){o.mine=o.mine||{c:{},r:{},p:{}};return o;}}}catch(e){}
-  return null;
+var KEY='beer-naver-v1',KEYSTORE='beer-naver-clientid',JOINKEY='beer-join-v1',MIGKEY='beer-migrated-v1';
+function legacyShops(){
+  try{var raw=localStorage.getItem(KEY);if(raw){var o=JSON.parse(raw);if(o&&o.v===1&&Array.isArray(o.shops))return o.shops;}}catch(e){}
+  return [];
 }
-var state=loadState()||{v:1,shops:[],mine:{c:{},r:{},p:{}}};
-function save(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){}}
+var state={v:1,shops:[],mine:{c:{},r:{},p:{}}};
+function save(){}
+var join=null;
+try{var jr=localStorage.getItem(JOINKEY);if(jr){var jo=JSON.parse(jr);if(jo&&jo.code&&jo.nick)join=jo;}}catch(e){}
+var serverMapKey='';
 var view={mode:'list',id:null};
 var filter='all',sort='recent',draft=null,picked=null,searchItems=[],searchSeq=0;
 
@@ -473,7 +489,7 @@ function listView(){
     }).join('')+'</ul>';
   }
   h+='<details class="rules"><summary>검증 기준은 이렇게 정해요</summary><ul><li><b>검증됨</b> 최근 30일 안에 확인이 있고, 확인이 5회 이상이에요.</li><li><b>확인 중</b> 확인이 2회 이상이지만 검증됨 기준에는 못 미쳐요.</li><li><b>확인 필요</b> 확인이 1회뿐이거나, 60일 넘게 확인이 없거나, 수정 제안이 2건 이상이에요.</li></ul><p>한 사람이 가게마다 하루 한 번 확인할 수 있어요. 지금은 이 브라우저에만 저장돼요.</p></details>';
-  h+='<div class="tools"><button type="button" class="btn small" data-act="export">데이터 내보내기 (JSON)</button><button type="button" class="btn small" data-act="rekey">지도 키 바꾸기</button></div>';
+  h+='<div class="tools"><button type="button" class="btn small" data-act="export">데이터 내보내기 (JSON)</button><button type="button" class="btn small" data-act="rekey">지도 키 바꾸기</button><button type="button" class="btn small" data-act="rejoin">닉네임·코드 바꾸기</button></div>';
   return h;
 }
 
@@ -571,6 +587,51 @@ function renderPanel(resetScroll){
 }
 function renderAll(resetScroll){renderMarkers();renderPanel(resetScroll);}
 
+/* ---------- shared data (server) ---------- */
+function api(method,body){
+  var h={'Content-Type':'application/json','x-access-code':join?join.code:'','x-nick':encodeURIComponent(join?join.nick:'')};
+  return fetch('/api/shops',{method:method,headers:h,body:body?JSON.stringify(body):undefined}).then(function(r){
+    return r.json().catch(function(){return {};}).then(function(j){return {ok:r.ok,status:r.status,j:j};});
+  },function(){return {ok:false,status:0,j:{}};});
+}
+function applyMine(s){
+  state.mine.c[s.id]=s.my&&s.my.c?today():undefined;
+  state.mine.r[s.id]=s.my&&s.my.r?today():undefined;
+  state.mine.p[s.id]=s.my&&s.my.p?today():undefined;
+}
+function applyShops(list){
+  state.shops=list;
+  state.mine={c:{},r:{},p:{}};
+  list.forEach(applyMine);
+}
+function upsertShop(sh){
+  var i=state.shops.findIndex(function(x){return x.id===sh.id;});
+  if(i>=0)state.shops[i]=sh;else state.shops.push(sh);
+  applyMine(sh);
+}
+function failMsg(res,fallback){
+  if(res.status===401){forgetJoin('초대 코드가 바뀌었어요. 다시 입력해 주세요.');return '';}
+  if(res.status===0)return '서버에 연결하지 못했어요. 잠시 뒤 다시 해 주세요.';
+  if(res.status===409&&res.j.error==='already')return '오늘은 이미 했어요. 내일 다시 할 수 있어요.';
+  return fallback||'저장하지 못했어요. 잠시 뒤 다시 해 주세요.';
+}
+var syncing=false;
+function syncShops(){
+  if(syncing||!join||!map||document.hidden||view.mode==='add')return;
+  syncing=true;
+  api('GET').then(function(res){
+    syncing=false;
+    if(!res.ok||!Array.isArray(res.j.shops))return;
+    var keep=view.mode==='detail'?view.id:null;
+    applyShops(res.j.shops);
+    if(keep&&!byId(keep)){view={mode:'list',id:null};renderAll(false);return;}
+    renderMarkers();
+    if(view.mode==='list')renderPanel(false);
+  });
+}
+setInterval(syncShops,45000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)syncShops();});
+
 /* ---------- place search (NAVER local search through the Netlify function) ---------- */
 function norm(t){return String(t||'').toLowerCase().replace(/[\s\-·.()]/g,'');}
 function distM(a,b,c,d){
@@ -595,7 +656,7 @@ function runSearch(){
   if(q.length<2){searchMsg('가게 이름을 두 글자 이상 적어 주세요.');return;}
   var my=++searchSeq;
   searchMsg('찾는 중...');if(btn)btn.disabled=true;
-  fetch('/.netlify/functions/search?q='+encodeURIComponent(q)).then(function(r){
+  fetch('/.netlify/functions/search?q='+encodeURIComponent(q),{headers:{'x-access-code':join?join.code:''}}).then(function(r){
     return r.json().catch(function(){return {};}).then(function(j){return {ok:r.ok,status:r.status,j:j};});
   }).then(function(res){
     if(my!==searchSeq)return;
@@ -670,13 +731,16 @@ panel.addEventListener('click',function(e){
   else if(act==='back')goList();
   else if(act==='add')openAdd();
   else if(act==='export')exportData();
+  else if(act==='rejoin'){forgetJoin('');}
   else if(act==='rekey'){try{localStorage.removeItem(KEYSTORE);}catch(x){}location.reload();}
   else if(act==='confirm'){
     var s=byId(b.getAttribute('data-id'));if(!s)return;
     if(state.mine.c[s.id]===today())return;
-    s.confirms+=1;s.last=today();s.log=s.log||[];s.log.push({d:today(),x:'방문 확인, 정보가 맞아요'});
-    state.mine.c[s.id]=today();save();renderAll(false);
-    toast('확인 고마워요. 이 가게는 이제 확인 '+s.confirms+'회예요');
+    b.disabled=true;
+    api('POST',{action:'confirm',id:s.id}).then(function(res){
+      if(res.ok){upsertShop(res.j.shop);renderAll(false);toast('확인 고마워요. 이 가게는 이제 확인 '+res.j.shop.confirms+'회예요');}
+      else{if(res.j.shop){upsertShop(res.j.shop);renderAll(false);}b.disabled=false;var m=failMsg(res);if(m)toast(m);}
+    });
   }
   else if(act==='toggle-report'){var bx=document.getElementById('reportBox');if(bx)bx.open=!bx.open;}
   else if(act==='here'){
@@ -723,18 +787,19 @@ panel.addEventListener('submit',function(e){
   if(f.id==='rateForm'){
     var s=byId(f.getAttribute('data-id'));if(!s||state.mine.r[s.id]===today())return;
     var v={};AX.forEach(function(a){v[a[0]]=Number(f.querySelector('[name="'+a[0]+'"]').value);});
-    AX.forEach(function(a){var k=a[0];s.ratings[k]=s.rn?(s.ratings[k]*s.rn+v[k])/(s.rn+1):v[k];});
-    s.rn+=1;
-    var mean=AX.reduce(function(t,a){return t+v[a[0]];},0)/AX.length;
-    s.log=s.log||[];s.log.push({d:today(),x:'맛 평가 '+mean.toFixed(1)+'점'});
-    state.mine.r[s.id]=today();save();renderAll(false);toast('평가를 저장했어요');
+    api('POST',{action:'rate',id:s.id,v:v}).then(function(res){
+      if(res.ok){upsertShop(res.j.shop);renderAll(false);toast('평가를 저장했어요');}
+      else{if(res.j.shop){upsertShop(res.j.shop);renderAll(false);}var m=failMsg(res);if(m)toast(m);}
+    });
   }
   else if(f.id==='reportForm'){
     var s2=byId(f.getAttribute('data-id'));if(!s2||state.mine.p[s2.id])return;
     var kind=(f.querySelector('input[name="kind"]:checked')||{}).value||'기타';
     var note=(f.querySelector('[name="note"]').value||'').trim();
-    s2.reports+=1;s2.log=s2.log||[];s2.log.push({d:today(),x:'수정 제안: '+kind+(note?' ('+note.slice(0,40)+')':'')});
-    state.mine.p[s2.id]=today();save();renderAll(false);toast('수정 제안을 남겼어요. 다른 방문자가 확인해 줄 거예요');
+    api('POST',{action:'report',id:s2.id,kind:kind,note:note}).then(function(res){
+      if(res.ok){upsertShop(res.j.shop);renderAll(false);toast('수정 제안을 남겼어요. 다른 방문자가 확인해 줄 거예요');}
+      else{if(res.j.shop){upsertShop(res.j.shop);renderAll(false);}var m=failMsg(res);if(m)toast(m);}
+    });
   }
   else if(f.id==='addForm'){submitAdd(f);}
 });
@@ -758,18 +823,36 @@ function submitAdd(f){
   var rateBox=f.querySelector('#addRate'),ratings=R(0,0,0,0,0),rn=0;
   if(rateBox&&rateBox.open){AX.forEach(function(x){ratings[x[0]]=Number(f.querySelector('[name="'+x[0]+'"]').value);});rn=1;}
   var a=nearestArea(draft.lat,draft.lng);
-  var shop={id:'u'+Date.now(),name:name,address:picked?picked.address:'',category:picked?picked.category:'',area:a?a.id:'',lat:draft.lat,lng:draft.lng,reports:0,kegs:kegs,ratings:ratings,rn:rn,confirms:1,last:today(),log:[{d:today(),x:'가게 등록'}]};
-  state.shops.push(shop);save();
-  view={mode:'detail',id:shop.id};draft=null;picked=null;
-  renderAll(true);
-  moveMap(shop.lat,shop.lng,map&&map.getZoom()<15?16:0);
-  toast('추가했어요. 다른 방문자가 확인하면 신뢰도가 올라가요');
+  var sbtn=f.querySelector('button[type="submit"]');if(sbtn)sbtn.disabled=true;
+  err.textContent='';
+  api('POST',{action:'add',name:name,address:picked?picked.address:'',category:picked?picked.category:'',area:a?a.id:'',lat:draft.lat,lng:draft.lng,kegs:kegs,ratings:ratings,rn:rn}).then(function(res){
+    if(sbtn)sbtn.disabled=false;
+    if(!res.ok){
+      if(res.status===409&&res.j.error==='dup'){err.textContent='"'+res.j.name+'"은(는) 근처에 이미 등록돼 있어요. 그 가게 카드에서 확인 버튼을 눌러 주세요.';return;}
+      var m=failMsg(res,'등록하지 못했어요. 입력한 내용을 확인해 주세요.');if(m)err.textContent=m;return;
+    }
+    var shop=res.j.shop;upsertShop(shop);
+    view={mode:'detail',id:shop.id};draft=null;picked=null;
+    renderAll(true);
+    moveMap(shop.lat,shop.lng,map&&map.getZoom()<15?16:0);
+    toast('추가했어요. 친구들이 확인하면 신뢰도가 올라가요');
+  });
 }
 
 /* ---------- setup & boot ---------- */
-var stageEl=document.getElementById('stage'),setupEl=document.getElementById('setup'),btnAdd=document.getElementById('btnAdd');
+var stageEl=document.getElementById('stage'),setupEl=document.getElementById('setup'),joinEl=document.getElementById('join'),btnAdd=document.getElementById('btnAdd');
+function showJoin(msg){
+  stageEl.hidden=true;btnAdd.hidden=true;setupEl.hidden=true;joinEl.hidden=false;
+  var er=document.getElementById('joinErr');er.hidden=!msg;er.textContent=msg||'';
+  document.getElementById('codeIn').value=join?join.code:'';
+  document.getElementById('nickIn').value=join?join.nick:'';
+}
+function forgetJoin(msg){
+  try{localStorage.removeItem(JOINKEY);}catch(e){}
+  join=null;showJoin(msg);
+}
 function showSetup(msg){
-  stageEl.hidden=true;btnAdd.hidden=true;setupEl.hidden=false;
+  stageEl.hidden=true;btnAdd.hidden=true;setupEl.hidden=false;joinEl.hidden=true;
   var host=(location.protocol==='http:'||location.protocol==='https:')?location.protocol+'//'+location.hostname:'';
   document.getElementById('regUrl').textContent=host||'(웹 주소로 열면 여기에 표시돼요)';
   document.getElementById('fileWarn').hidden=!!host;
@@ -778,7 +861,7 @@ function showSetup(msg){
   document.getElementById('keyIn').value=saved;
 }
 function boot(){
-  setupEl.hidden=true;stageEl.hidden=false;btnAdd.hidden=false;
+  setupEl.hidden=true;joinEl.hidden=true;stageEl.hidden=false;btnAdd.hidden=false;
   renderFilters();
   if(map){renderAll(true);return;}
   whenSized(function(){initMap();renderAll(true);setTimeout(syncSize,300);setTimeout(syncSize,1200);});
@@ -795,11 +878,42 @@ function loadNaver(key){
 window.navermap_authFailure=function(){
   showSetup('지도 인증에 실패했어요. Client ID가 맞는지, 웹 서비스 URL에 위 주소를 등록했는지 확인해 주세요.');
 };
-function start(){
-  var key='';try{key=localStorage.getItem(KEYSTORE)||'';}catch(e){}
-  if(!key){showSetup('');return;}
-  loadNaver(key).then(boot,function(){showSetup('네이버 지도 스크립트를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');});
+function migrateLocal(){
+  var old=legacyShops(),done='';
+  try{done=localStorage.getItem(MIGKEY)||'';}catch(e){}
+  if(!old.length||done)return Promise.resolve(false);
+  return api('POST',{action:'import',shops:old}).then(function(res){
+    if(res.ok){try{localStorage.setItem(MIGKEY,'1');}catch(e){}return res.j.added>0;}
+    return false;
+  });
 }
+function start(){
+  if(!join){showJoin('');return;}
+  api('GET').then(function(res){
+    if(res.status===401){forgetJoin('초대 코드가 맞지 않아요. 다시 확인해 주세요.');return;}
+    if(res.status===400){forgetJoin('닉네임을 적어 주세요.');return;}
+    if(res.status===500&&res.j.error==='not_configured'){showJoin('서버에 초대 코드(ACCESS_CODE)가 아직 설정되지 않았어요.');return;}
+    if(!res.ok||!Array.isArray(res.j.shops)){showJoin('서버에 연결하지 못했어요. 잠시 뒤 새로고침해 주세요.');return;}
+    applyShops(res.j.shops);
+    serverMapKey=res.j.mapKey||'';
+    var key='';try{key=localStorage.getItem(KEYSTORE)||'';}catch(e){}
+    if(!key)key=serverMapKey;
+    if(!key){showSetup('');return;}
+    loadNaver(key).then(function(){
+      boot();
+      migrateLocal().then(function(changed){if(changed)api('GET').then(function(r2){if(r2.ok){applyShops(r2.j.shops);renderAll(false);toast('이 브라우저에 있던 가게를 공유 지도에 올렸어요');}});});
+    },function(){showSetup('네이버 지도 스크립트를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');});
+  });
+}
+document.getElementById('joinForm').addEventListener('submit',function(e){
+  e.preventDefault();
+  var c=document.getElementById('codeIn').value.trim(),n=document.getElementById('nickIn').value.trim();
+  if(!c){showJoin('초대 코드를 적어 주세요.');return;}
+  if(!n){showJoin('닉네임을 적어 주세요.');return;}
+  join={code:c,nick:n.slice(0,12)};
+  try{localStorage.setItem(JOINKEY,JSON.stringify(join));}catch(x){}
+  start();
+});
 document.getElementById('keyForm').addEventListener('submit',function(e){
   e.preventDefault();
   var k=document.getElementById('keyIn').value.trim();

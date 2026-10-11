@@ -44,6 +44,9 @@ function normalize(it) {
 }
 
 exports.handler = async function (event) {
+  // 초대 코드가 설정돼 있으면, 코드를 아는 사람만 검색할 수 있어요 (남이 검색 한도를 쓰지 못하게)
+  var need = process.env.ACCESS_CODE;
+  if (need && ((event.headers && event.headers['x-access-code']) || '') !== need) return json(401, { error: 'bad_code' });
   var q = ((event.queryStringParameters && event.queryStringParameters.q) || '').trim();
   if (q.length < 2 || q.length > 60) return json(400, { error: 'bad_query' });
 
