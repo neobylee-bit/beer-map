@@ -393,20 +393,48 @@ function moveMap(lat,lng,zoom){
   if(zoom)map.setZoom(zoom);
 }
 function syncNames(){mapBox.classList.toggle('names',!!map&&map.getZoom()>=15);}
-function syncSize(){
-  if(!map)return;
+/* The NAVER map pins its overlay layer using the container size it saw when it was created.
+   If that size was wrong (or later changes), pins land in the wrong place while tiles look fine.
+   So: create the map only once the box has a real size, pass that size explicitly, and rebuild the map if the box changes. */
+var curW=0,curH=0,reflowT=null;
+function createMap(center,zoom){
   var w=mapBox.clientWidth,h=mapBox.clientHeight;
-  if(w&&h)map.setSize(new naver.maps.Size(w,h));
-}
-function initMap(){
-  map=new naver.maps.Map('nmap',{center:new naver.maps.LatLng(37.5446,127.0100),zoom:12,zoomControl:true,zoomControlOptions:{position:naver.maps.Position.TOP_RIGHT},mapDataControl:false,scaleControl:false});
+  var opt={center:center,zoom:zoom,zoomControl:true,zoomControlOptions:{position:naver.maps.Position.TOP_RIGHT},mapDataControl:false,scaleControl:false};
+  if(w>0&&h>0)opt.size=new naver.maps.Size(w,h);
+  map=new naver.maps.Map('nmap',opt);
+  curW=w;curH=h;
   naver.maps.Event.addListener(map,'zoom_changed',syncNames);
   naver.maps.Event.addListener(map,'click',function(e){
     if(view.mode==='add'&&e&&e.coord){setDraft(e.coord.lat(),e.coord.lng(),false);}
   });
-  if(window.ResizeObserver){new ResizeObserver(syncSize).observe(mapBox);}
-  else window.addEventListener('resize',syncSize);
+}
+function rebuildMap(){
+  var c=map.getCenter(),z=map.getZoom();
+  markers.forEach(function(m){m.setMap(null);});markers=[];
+  if(draftMarker){draftMarker.setMap(null);draftMarker=null;}
+  try{map.destroy();}catch(e){}
+  var el=document.getElementById('nmap');el.innerHTML='';el.removeAttribute('style');
+  createMap(c,z);
+  syncNames();renderMarkers();
+}
+function syncSize(){
+  if(!map)return;
+  var w=mapBox.clientWidth,h=mapBox.clientHeight;
+  if(w<50||h<50)return;
+  if(Math.abs(w-curW)<2&&Math.abs(h-curH)<2)return;
+  rebuildMap();
+}
+function reflow(){clearTimeout(reflowT);reflowT=setTimeout(syncSize,120);}
+function initMap(){
+  createMap(new naver.maps.LatLng(37.5446,127.0100),12);
+  if(window.ResizeObserver){new ResizeObserver(reflow).observe(mapBox);}
+  else window.addEventListener('resize',reflow);
   syncNames();
+}
+function whenSized(cb,n){
+  n=n||0;
+  if((mapBox.clientWidth>50&&mapBox.clientHeight>50)||n>30){cb();return;}
+  requestAnimationFrame(function(){whenSized(cb,n+1);});
 }
 
 /* ---------- filters ---------- */
@@ -751,9 +779,9 @@ function showSetup(msg){
 }
 function boot(){
   setupEl.hidden=true;stageEl.hidden=false;btnAdd.hidden=false;
-  if(!map)initMap();
-  renderFilters();renderAll(true);
-  setTimeout(syncSize,0);
+  renderFilters();
+  if(map){renderAll(true);return;}
+  whenSized(function(){initMap();renderAll(true);setTimeout(syncSize,300);setTimeout(syncSize,1200);});
 }
 function loadNaver(key){
   return new Promise(function(res,rej){
