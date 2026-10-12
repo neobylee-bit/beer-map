@@ -72,6 +72,25 @@ button{font:inherit;color:inherit}
   .legend .size-note{display:inline-flex}
 }
 
+/* map buttons + phone tweaks */
+.map-tools{position:absolute;left:10px;bottom:10px;z-index:5;display:flex;gap:8px}
+.mbtn{min-height:38px;padding:0 12px;border-radius:999px;border:1px solid var(--line-strong);background:var(--panel);color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;box-shadow:0 1px 4px rgba(28,38,49,.28);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.mbtn:active{background:var(--hover)}
+.mbtn svg{width:16px;height:16px;flex:none}
+.mbtn.busy{opacity:.6}
+.dist{color:var(--accent-text);font-weight:700}
+.me-dot{width:18px;height:18px;border-radius:50%;background:#2F6FED;border:3px solid #fff;box-shadow:0 0 0 2px rgba(47,111,237,.35),0 1px 4px rgba(0,0,0,.4)}
+.only-phone{display:inline-flex}
+@supports (height:100dvh){html,body{height:100dvh}}
+@media (max-width:899px){
+  select,input[type="text"],input[type="number"],textarea{font-size:16px}
+  .chip-f{min-height:36px}
+  .btn.small{min-height:38px}
+  .stage.bigmap{grid-template-rows:minmax(0,72%) minmax(0,1fr)}
+  .row{min-height:56px}
+}
+@media (min-width:900px){.only-phone{display:none}}
+
 /* markers (drawn inside the NAVER map, so fixed colors that read on the light map) */
 .nm{position:relative;display:block;cursor:pointer}
 .nm svg{display:block;overflow:visible;filter:drop-shadow(0 1.5px 1.5px rgba(28,38,49,.4));transform-origin:50% 100%;transition:transform .12s}
@@ -227,6 +246,10 @@ fieldset{border:0;margin:0;padding:0;min-width:0}
       <div class="map" id="map">
         <div id="nmap"></div>
         <div class="map-hint" id="mapHint" hidden>지도를 눌러 가게 위치를 골라 주세요</div>
+        <div class="map-tools">
+          <button type="button" class="mbtn" id="btnLoc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>내 위치</button>
+          <button type="button" class="mbtn only-phone" id="btnBig" aria-pressed="false">지도 크게</button>
+        </div>
       </div>
       <div class="legend" aria-label="범례">
         <span><i class="lg-dot"></i>검증됨</span>
@@ -406,9 +429,46 @@ function renderMarkers(){
 }
 function moveMap(lat,lng,zoom){
   if(!map)return;
-  map.setCenter(new naver.maps.LatLng(lat,lng));
+  var c=new naver.maps.LatLng(lat,lng);
+  try{
+    if(zoom&&zoom!==map.getZoom()&&map.morph){map.morph(c,zoom,{duration:350});return;}
+    if(!zoom&&map.panTo){map.panTo(c,{duration:300});return;}
+  }catch(e){}
+  map.setCenter(c);
   if(zoom)map.setZoom(zoom);
 }
+var meCoord=null,meMarker=null;
+function drawMe(){
+  if(meMarker){meMarker.setMap(null);meMarker=null;}
+  if(!map||!meCoord)return;
+  meMarker=new naver.maps.Marker({position:new naver.maps.LatLng(meCoord.lat,meCoord.lng),map:map,zIndex:5,clickable:false,icon:{content:'<div class="me-dot"></div>',size:new naver.maps.Size(18,18),anchor:new naver.maps.Point(9,9)}});
+}
+function distText(m){return m<1000?(Math.max(10,Math.round(m/10)*10))+'m':(m/1000).toFixed(1)+'km';}
+function getMe(onOk,onFail){
+  var b=document.getElementById('btnLoc');
+  if(!navigator.geolocation){toast('이 브라우저에서는 현재 위치를 쓸 수 없어요');if(onFail)onFail();return;}
+  b.classList.add('busy');
+  navigator.geolocation.getCurrentPosition(function(p){
+    b.classList.remove('busy');
+    meCoord={lat:p.coords.latitude,lng:p.coords.longitude};
+    drawMe();
+    if(view.mode==='list')renderPanel(false);
+    if(onOk)onOk();
+  },function(){
+    b.classList.remove('busy');
+    toast('현재 위치를 가져오지 못했어요. 브라우저의 위치 권한을 확인해 주세요');
+    if(onFail)onFail();
+  },{enableHighAccuracy:true,timeout:8000,maximumAge:30000});
+}
+function locateMe(){
+  getMe(function(){moveMap(meCoord.lat,meCoord.lng,map&&map.getZoom()<15?15:0);});
+}
+document.getElementById('btnLoc').addEventListener('click',locateMe);
+document.getElementById('btnBig').addEventListener('click',function(){
+  var on=stageEl.classList.toggle('bigmap');
+  this.setAttribute('aria-pressed',String(on));
+  this.textContent=on?'목록 크게':'지도 크게';
+});
 function syncNames(){mapBox.classList.toggle('names',!!map&&map.getZoom()>=15);}
 /* The NAVER map pins its overlay layer using the container size it saw when it was created.
    If that size was wrong (or later changes), pins land in the wrong place while tiles look fine.
@@ -431,8 +491,9 @@ function rebuildMap(){
   if(draftMarker){draftMarker.setMap(null);draftMarker=null;}
   try{map.destroy();}catch(e){}
   var el=document.getElementById('nmap');el.innerHTML='';el.removeAttribute('style');
+  if(meMarker){meMarker.setMap(null);meMarker=null;}
   createMap(c,z);
-  syncNames();renderMarkers();
+  syncNames();renderMarkers();drawMe();
 }
 function syncSize(){
   if(!map)return;
@@ -475,18 +536,19 @@ function listView(){
     if(sort==='score')return (score(b)||0)-(score(a)||0);
     if(sort==='confirms')return b.confirms-a.confirms;
     if(sort==='value')return minPer100(a)-minPer100(b);
+    if(sort==='near'&&meCoord)return distM(meCoord.lat,meCoord.lng,a.lat,a.lng)-distM(meCoord.lat,meCoord.lng,b.lat,b.lng);
     return days(a.last)-days(b.last);
   });
   var h='';
   h+='<div class="sorter"><span class="count">'+list.length+'곳 <small>/ 전체 '+state.shops.length+'곳</small></span>';
-  h+='<select id="sortSel" aria-label="정렬">'+[['recent','최근 확인순'],['score','점수 높은 순'],['confirms','확인 많은 순'],['value','100ml당 싼 순']].map(function(o){return '<option value="'+o[0]+'"'+(sort===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select></div>';
+  h+='<select id="sortSel" aria-label="정렬">'+[['recent','최근 확인순'],['score','점수 높은 순'],['confirms','확인 많은 순'],['near','가까운 순'],['value','100ml당 싼 순']].map(function(o){return '<option value="'+o[0]+'"'+(sort===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select></div>';
   if(!list.length){
     h+='<div class="empty-note">'+(state.shops.length?'이 조건에 맞는 가게가 아직 없어요.':'아직 등록한 가게가 없어요.<br>가본 곳부터 지도에 하나씩 찍어 보세요.')+'<br><button class="btn primary" type="button" data-act="add">+ 가게 추가</button></div>';
   }else{
     h+='<ul class="rows">'+list.map(function(s){
       var st=status(s),sc=score(s),sty=[];
       s.kegs.forEach(function(k){if(sty.indexOf(k.style)<0)sty.push(k.style);});
-      return '<li><button type="button" class="row" data-act="open" data-id="'+s.id+'"><span class="r-main"><span class="nmx">'+esc(s.name)+'</span><span class="meta">'+esc(areaName(s))+' 근처 · 마지막 확인 '+fmtAgo(days(s.last))+' · 확인 '+s.confirms+'회</span><span class="styles">'+sty.map(function(t){return '<span class="sty">'+t+'</span>';}).join('')+'</span></span><span class="r-side"><span class="score">'+(sc===null?'<small>평가 없음</small>':sc.toFixed(1))+'</span>'+badge(st)+'</span></button></li>';
+      return '<li><button type="button" class="row" data-act="open" data-id="'+s.id+'"><span class="r-main"><span class="nmx">'+esc(s.name)+'</span><span class="meta">'+(meCoord?'<b class="dist">'+distText(distM(meCoord.lat,meCoord.lng,s.lat,s.lng))+'</b> · ':'')+esc(areaName(s))+' 근처 · 마지막 확인 '+fmtAgo(days(s.last))+' · 확인 '+s.confirms+'회</span><span class="styles">'+sty.map(function(t){return '<span class="sty">'+t+'</span>';}).join('')+'</span></span><span class="r-side"><span class="score">'+(sc===null?'<small>평가 없음</small>':sc.toFixed(1))+'</span>'+badge(st)+'</span></button></li>';
     }).join('')+'</ul>';
   }
   h+='<details class="rules"><summary>검증 기준은 이렇게 정해요</summary><ul><li><b>검증됨</b> 최근 30일 안에 확인이 있고, 확인이 5회 이상이에요.</li><li><b>확인 중</b> 확인이 2회 이상이지만 검증됨 기준에는 못 미쳐요.</li><li><b>확인 필요</b> 확인이 1회뿐이거나, 60일 넘게 확인이 없거나, 수정 제안이 2건 이상이에요.</li></ul><p>한 사람이 가게마다 하루 한 번 확인할 수 있어요. 지금은 이 브라우저에만 저장돼요.</p></details>';
@@ -768,7 +830,16 @@ panel.addEventListener('input',function(e){
   if(t.type==='range'){var o=document.getElementById(t.id+'-o');if(o)o.textContent=Number(t.value).toFixed(1);}
 });
 panel.addEventListener('change',function(e){
-  if(e.target.id==='sortSel'){sort=e.target.value;renderPanel(false);}
+  if(e.target.id==='sortSel'){
+    var v=e.target.value;
+    if(v==='near'&&!meCoord){
+      sort='recent';
+      getMe(function(){sort='near';renderPanel(false);},function(){sort='recent';renderPanel(false);});
+      return;
+    }
+    if(v==='near')getMe(function(){sort='near';renderPanel(false);},function(){sort='near';renderPanel(false);});
+    sort=v;renderPanel(false);
+  }
   if(e.target.id==='f-jump'){var a=areaById(e.target.value);if(a)moveMap(a.lat,a.lng,16);}
 });
 panel.addEventListener('mouseover',function(e){
