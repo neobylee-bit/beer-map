@@ -322,6 +322,7 @@ function legacyShops(){
   try{var raw=localStorage.getItem(KEY);if(raw){var o=JSON.parse(raw);if(o&&o.v===1&&Array.isArray(o.shops))return o.shops;}}catch(e){}
   return [];
 }
+var IS_ADMIN=/[?&]admin(=|&|$)/.test(location.search);
 var state={v:1,shops:[],mine:{c:{},r:{},p:{}}};
 function save(){}
 var join=null;
@@ -489,7 +490,7 @@ function listView(){
     }).join('')+'</ul>';
   }
   h+='<details class="rules"><summary>검증 기준은 이렇게 정해요</summary><ul><li><b>검증됨</b> 최근 30일 안에 확인이 있고, 확인이 5회 이상이에요.</li><li><b>확인 중</b> 확인이 2회 이상이지만 검증됨 기준에는 못 미쳐요.</li><li><b>확인 필요</b> 확인이 1회뿐이거나, 60일 넘게 확인이 없거나, 수정 제안이 2건 이상이에요.</li></ul><p>한 사람이 가게마다 하루 한 번 확인할 수 있어요. 지금은 이 브라우저에만 저장돼요.</p></details>';
-  h+='<div class="tools"><button type="button" class="btn small" data-act="export">데이터 내보내기 (JSON)</button><button type="button" class="btn small" data-act="rekey">지도 키 바꾸기</button><button type="button" class="btn small" data-act="rejoin">닉네임·코드 바꾸기</button></div>';
+  if(IS_ADMIN)h+='<div class="tools"><button type="button" class="btn small" data-act="export">데이터 내보내기 (JSON)</button><button type="button" class="btn small" data-act="rekey">지도 키 바꾸기</button><button type="button" class="btn small" data-act="rejoin">닉네임·코드 바꾸기</button></div>';
   return h;
 }
 
