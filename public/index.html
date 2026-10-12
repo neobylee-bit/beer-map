@@ -476,7 +476,9 @@ function syncNames(){mapBox.classList.toggle('names',!!map&&map.getZoom()>=15);}
 var curW=0,curH=0,reflowT=null;
 function createMap(center,zoom){
   var w=mapBox.clientWidth,h=mapBox.clientHeight;
-  var opt={center:center,zoom:zoom,zoomControl:true,zoomControlOptions:{position:naver.maps.Position.TOP_RIGHT},mapDataControl:false,scaleControl:false};
+  var zc={position:naver.maps.Position.TOP_RIGHT};
+  if(naver.maps.ZoomControlStyle&&naver.maps.ZoomControlStyle.SMALL!==undefined)zc.style=naver.maps.ZoomControlStyle.SMALL;
+  var opt={center:center,zoom:zoom,zoomControl:true,zoomControlOptions:zc,mapDataControl:false,scaleControl:false};
   if(w>0&&h>0)opt.size=new naver.maps.Size(w,h);
   map=new naver.maps.Map('nmap',opt);
   curW=w;curH=h;
